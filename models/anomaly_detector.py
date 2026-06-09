@@ -12,7 +12,7 @@ with open("models/saved/isolation_forest.pkl", "rb") as f:
 with open("models/saved/scaler.pkl", "rb") as f:
     scaler = pickle.load(f)
 
-print("✅ AI Model loaded. Watching for anomalies...\n")
+print(" AI Model loaded. Watching for anomalies...\n")
 
 def get_metrics():
     cpu  = psutil.cpu_percent(interval=1)
