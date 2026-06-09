@@ -1,6 +1,10 @@
 from flask import Flask, jsonify, render_template_string
 from influxdb_client import InfluxDBClient
 import psutil
+import pickle
+import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
 
 INFLUX_URL    = "http://localhost:8086"
 INFLUX_TOKEN  = "RSlYJebICNsJtmoOXp3BROMi_R8LSP1SdrnzRj_Bnq5rtC3-hgS_pEA0eqgbXZlta0ZIt9G1YZXFzFh71L7S_w=="
@@ -9,6 +13,12 @@ INFLUX_BUCKET = "system_metrics"
 
 app = Flask(__name__)
 client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+
+# Load AI model
+with open("models/saved/isolation_forest.pkl", "rb") as f:
+    model = pickle.load(f)
+with open("models/saved/scaler.pkl", "rb") as f:
+    scaler = pickle.load(f)
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -20,8 +30,8 @@ DASHBOARD_HTML = """
         * { margin:0; padding:0; box-sizing:border-box; }
         body { background:#0f1117; color:#fff; font-family:'Segoe UI',sans-serif; padding:20px; }
         h1 { text-align:center; margin-bottom:6px; font-size:24px; color:#00d4ff; }
-        p.sub { text-align:center; color:#888; margin-bottom:24px; font-size:13px; }
-        .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:28px; }
+        p.sub { text-align:center; color:#888; margin-bottom:16px; font-size:13px; }
+        .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:20px; }
         .card { background:#1a1d2e; border-radius:12px; padding:20px; text-align:center; border:1px solid #2a2d3e; }
         .card .label { font-size:12px; color:#888; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px; }
         .card .value { font-size:36px; font-weight:700; }
@@ -33,15 +43,23 @@ DASHBOARD_HTML = """
         .charts { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
         .chart-box { background:#1a1d2e; border-radius:12px; padding:20px; border:1px solid #2a2d3e; }
         .chart-box h3 { font-size:13px; color:#888; margin-bottom:14px; text-transform:uppercase; letter-spacing:1px; }
-        .status { text-align:center; margin-bottom:16px; }
+        .status-bar { text-align:center; margin-bottom:16px; padding:12px; border-radius:10px; font-size:14px; font-weight:600; transition: all 0.3s; }
+        .status-normal  { background:#0d2e1f; border:1px solid #34d399; color:#34d399; }
+        .status-anomaly { background:#2e0d0d; border:1px solid #f87171; color:#f87171; animation: flashborder 1s infinite; }
+        @keyframes flashborder { 0%,100%{border-color:#f87171} 50%{border-color:#7f1d1d} }
         .dot { display:inline-block; width:8px; height:8px; background:#34d399; border-radius:50%; margin-right:6px; animation:pulse 1.5s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+        .ai-score { text-align:center; color:#888; font-size:12px; margin-bottom:16px; }
     </style>
 </head>
 <body>
     <h1>⚡ AI System Monitor</h1>
-    <p class="sub">Real-time metrics from your machine</p>
-    <div class="status"><span class="dot"></span><span style="color:#34d399;font-size:13px">Live — updating every 3 seconds</span></div>
+    <p class="sub">Real-time metrics + AI anomaly detection</p>
+
+    <div class="status-bar status-normal" id="statusBar">
+        <span class="dot"></span> ✅ All systems normal
+    </div>
+    <div class="ai-score" id="aiScore">AI confidence score: --</div>
 
     <div class="cards">
         <div class="card"><div class="label">CPU Usage</div><div class="value cpu-val" id="cpu">--</div><div class="unit">percent</div></div>
@@ -66,8 +84,7 @@ const cpuChart = makeChart('cpuChart', '#00d4ff', 'CPU %');
 const ramChart = makeChart('ramChart', '#a78bfa', 'RAM %');
 
 const addData = (chart, value) => {
-    const time = new Date().toLocaleTimeString();
-    chart.data.labels.push(time);
+    chart.data.labels.push(new Date().toLocaleTimeString());
     chart.data.datasets[0].data.push(value);
     if (chart.data.labels.length > 50) { chart.data.labels.shift(); chart.data.datasets[0].data.shift(); }
     chart.update();
@@ -81,6 +98,16 @@ const refresh = async () => {
         document.getElementById('ram').textContent  = d.ram + '%';
         document.getElementById('disk').textContent = d.disk + '%';
         document.getElementById('net').textContent  = d.net;
+
+        const bar = document.getElementById('statusBar');
+        document.getElementById('aiScore').textContent = 'AI anomaly score: ' + d.score;
+        if (d.anomaly) {
+            bar.className = 'status-bar status-anomaly';
+            bar.innerHTML = '🚨 ANOMALY DETECTED — Unusual system behaviour spotted by AI';
+        } else {
+            bar.className = 'status-bar status-normal';
+            bar.innerHTML = '<span class="dot"></span> ✅ All systems normal';
+        }
         addData(cpuChart, d.cpu);
         addData(ramChart, d.ram);
     } catch(e) { console.error(e); }
@@ -103,7 +130,15 @@ def metrics():
     ram  = psutil.virtual_memory().percent
     disk = psutil.disk_usage('C:/').percent
     net  = round(psutil.net_io_counters().bytes_sent / 1024 / 1024, 2)
-    return jsonify(cpu=cpu, ram=ram, disk=disk, net=net)
+
+    df     = pd.DataFrame([[cpu, ram, disk, net]],
+             columns=["cpu_percent","ram_percent","disk_percent","net_sent_mb"])
+    scaled = scaler.transform(df)
+    result = model.predict(scaled)[0]
+    score  = round(model.decision_function(scaled)[0], 3)
+
+    return jsonify(cpu=cpu, ram=ram, disk=disk, net=net,
+                   anomaly=bool(result == -1), score=score)
 
 if __name__ == '__main__':
     print("Dashboard running at http://localhost:5000")
