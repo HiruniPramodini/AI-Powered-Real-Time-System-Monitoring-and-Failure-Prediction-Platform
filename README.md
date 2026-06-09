@@ -18,11 +18,11 @@ and failure prediction, built as a 3rd year university project.
 - Chart.js (frontend)
 
 ## Project Phases
-- [x] Phase 1 — Data pipeline & live dashboard
-- [ ] Phase 2 — Data collection & export
-- [ ] Phase 3 — Anomaly detection model
-- [ ] Phase 4 — Predictive forecasting
-- [ ] Phase 5 — Alerts & auto-remediation
+-  Phase 1 — Data pipeline & live dashboard
+-  Phase 2 — Data collection & export
+-  Phase 3 — Anomaly detection model
+-  Phase 4 — Predictive forecasting
+-  Phase 5 — Alerts & auto-remediation
 
 ## Setup
 ```bash
