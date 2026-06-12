@@ -20,9 +20,11 @@ X_scaled = scaler.fit_transform(df)
 
 # Train Isolation Forest
 # contamination=0.05 means we expect ~5% of data to be anomalies
+
 model = IsolationForest(
-    n_estimators=100,
-    contamination=0.02,
+    n_estimators=200,
+    contamination=0.01,
+    max_samples='auto',
     random_state=42
 )
 model.fit(X_scaled)
