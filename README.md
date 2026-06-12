@@ -34,4 +34,4 @@ python dashboard/app.py
 ```
 
 ## Author
-Hiruni Pramodini — 3rd Year undergraduate project
+Hiruni Pramodini — 3rd Year undergraduate project (2026-June)
