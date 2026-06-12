@@ -1,9 +1,13 @@
 from flask import Flask, jsonify, render_template_string
 from influxdb_client import InfluxDBClient
+import sys
+sys.path.append('.')
+from alerts.alert_manager import send_alert
 import psutil
 import pickle
 import pandas as pd
 import warnings
+import pickle
 warnings.filterwarnings("ignore")
 
 INFLUX_URL    = "http://localhost:8086"
@@ -50,6 +54,13 @@ DASHBOARD_HTML = """
         .dot { display:inline-block; width:8px; height:8px; background:#34d399; border-radius:50%; margin-right:6px; animation:pulse 1.5s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
         .ai-score { text-align:center; color:#888; font-size:12px; margin-bottom:16px; }
+
+        .forecast-box { background:#1a1d2e; border-radius:12px; padding:20px; border:1px solid #2a2d3e; margin-bottom:20px; }
+        .forecast-box h3 { font-size:13px; color:#888; margin-bottom:14px; text-transform:uppercase; letter-spacing:1px; }
+        table { width:100%; border-collapse:collapse; }
+        th { color:#888; font-size:12px; text-align:left; padding:8px; border-bottom:1px solid #2a2d3e; }
+        td { font-size:13px; padding:8px; border-bottom:1px solid #1a1d2e; }
+        tr:hover td { background:#1f2235; }
     </style>
 </head>
 <body>
@@ -67,7 +78,17 @@ DASHBOARD_HTML = """
         <div class="card"><div class="label">Disk Usage</div><div class="value disk-val" id="disk">--</div><div class="unit">percent</div></div>
         <div class="card"><div class="label">Network Sent</div><div class="value net-val" id="net">--</div><div class="unit">MB total</div></div>
     </div>
-
+<div class="forecast-box">
+        <h3>🔮 AI Forecast — Next 30 Minutes</h3>
+        <table id="forecastTable">
+            <thead>
+                <tr><th>Time</th><th>Predicted CPU</th><th>Predicted RAM</th></tr>
+            </thead>
+            <tbody id="forecastBody">
+                <tr><td colspan="3" style="text-align:center;color:#888">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
     <div class="charts">
         <div class="chart-box"><h3>CPU % — Last 50 readings</h3><canvas id="cpuChart"></canvas></div>
         <div class="chart-box"><h3>RAM % — Last 50 readings</h3><canvas id="ramChart"></canvas></div>
@@ -115,6 +136,23 @@ const refresh = async () => {
 
 setInterval(refresh, 3000);
 refresh();
+const refreshForecast = async () => {
+    try {
+        const r = await fetch('/forecast');
+        const d = await r.json();
+        const body = document.getElementById('forecastBody');
+        body.innerHTML = d.forecast.map(row => `
+            <tr>
+                <td style="color:#888">${row.time}</td>
+                <td style="color:#00d4ff">${row.cpu}%</td>
+                <td style="color:#a78bfa">${row.ram}%</td>
+            </tr>
+        `).join('');
+    } catch(e) { console.error(e); }
+};
+
+setInterval(refreshForecast, 30000);
+refreshForecast();
 </script>
 </body>
 </html>
@@ -136,9 +174,39 @@ def metrics():
     scaled = scaler.transform(df)
     result = model.predict(scaled)[0]
     score  = round(model.decision_function(scaled)[0], 3)
+    # If anomaly detected, trigger alert
+    if result == -1:
+        try:
+            send_alert(cpu, ram, score)
+        except Exception:
+            pass
 
     return jsonify(cpu=cpu, ram=ram, disk=disk, net=net,
                    anomaly=bool(result == -1), score=score)
+@app.route('/forecast')
+def forecast():
+    try:
+        with open("models/saved/cpu_prophet.pkl", "rb") as f:
+            cpu_model = pickle.load(f)
+        with open("models/saved/ram_prophet.pkl", "rb") as f:
+            ram_model = pickle.load(f)
+
+        future_cpu = cpu_model.make_future_dataframe(periods=6, freq="5min")
+        future_ram = ram_model.make_future_dataframe(periods=6, freq="5min")
+
+        cpu_forecast = cpu_model.predict(future_cpu).tail(6)
+        ram_forecast = ram_model.predict(future_ram).tail(6)
+
+        result = []
+        for i in range(6):
+            result.append({
+                "time": cpu_forecast.iloc[i]["ds"].strftime("%H:%M"),
+                "cpu": round(cpu_forecast.iloc[i]["yhat"], 1),
+                "ram": round(ram_forecast.iloc[i]["yhat"], 1)
+            })
+        return jsonify(forecast=result)
+    except Exception as e:
+        return jsonify(error=str(e))
 
 if __name__ == '__main__':
     print("Dashboard running at http://localhost:5000")
