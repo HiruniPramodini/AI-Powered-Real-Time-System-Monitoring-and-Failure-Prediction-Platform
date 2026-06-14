@@ -1,13 +1,13 @@
 from flask import Flask, jsonify, render_template_string
 from influxdb_client import InfluxDBClient
-import sys
-sys.path.append('.')
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from alerts.alert_manager import send_alert
 import psutil
 import pickle
 import pandas as pd
+from datetime import datetime
 import warnings
-import pickle
 warnings.filterwarnings("ignore")
 
 INFLUX_URL    = "http://localhost:8086"
@@ -18,7 +18,6 @@ INFLUX_BUCKET = "system_metrics"
 app = Flask(__name__)
 client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 
-# Load AI model
 with open("models/saved/isolation_forest.pkl", "rb") as f:
     model = pickle.load(f)
 with open("models/saved/scaler.pkl", "rb") as f:
@@ -54,7 +53,6 @@ DASHBOARD_HTML = """
         .dot { display:inline-block; width:8px; height:8px; background:#34d399; border-radius:50%; margin-right:6px; animation:pulse 1.5s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
         .ai-score { text-align:center; color:#888; font-size:12px; margin-bottom:16px; }
-
         .forecast-box { background:#1a1d2e; border-radius:12px; padding:20px; border:1px solid #2a2d3e; margin-bottom:20px; }
         .forecast-box h3 { font-size:13px; color:#888; margin-bottom:14px; text-transform:uppercase; letter-spacing:1px; }
         table { width:100%; border-collapse:collapse; }
@@ -64,11 +62,11 @@ DASHBOARD_HTML = """
     </style>
 </head>
 <body>
-    <h1>⚡ AI System Monitor</h1>
+    <h1> AI System Monitor</h1>
     <p class="sub">Real-time metrics + AI anomaly detection</p>
 
     <div class="status-bar status-normal" id="statusBar">
-        <span class="dot"></span> ✅ All systems normal
+        <span class="dot"></span>  All systems normal
     </div>
     <div class="ai-score" id="aiScore">AI confidence score: --</div>
 
@@ -78,9 +76,10 @@ DASHBOARD_HTML = """
         <div class="card"><div class="label">Disk Usage</div><div class="value disk-val" id="disk">--</div><div class="unit">percent</div></div>
         <div class="card"><div class="label">Network Sent</div><div class="value net-val" id="net">--</div><div class="unit">MB total</div></div>
     </div>
-<div class="forecast-box">
+
+    <div class="forecast-box">
         <h3>🔮 AI Forecast — Next 30 Minutes</h3>
-        <table id="forecastTable">
+        <table>
             <thead>
                 <tr><th>Time</th><th>Predicted CPU</th><th>Predicted RAM</th></tr>
             </thead>
@@ -89,6 +88,7 @@ DASHBOARD_HTML = """
             </tbody>
         </table>
     </div>
+
     <div class="charts">
         <div class="chart-box"><h3>CPU % — Last 50 readings</h3><canvas id="cpuChart"></canvas></div>
         <div class="chart-box"><h3>RAM % — Last 50 readings</h3><canvas id="ramChart"></canvas></div>
@@ -111,6 +111,8 @@ const addData = (chart, value) => {
     chart.update();
 };
 
+let anomalyTimer = null;
+
 const refresh = async () => {
     try {
         const r = await fetch('/metrics');
@@ -119,27 +121,33 @@ const refresh = async () => {
         document.getElementById('ram').textContent  = d.ram + '%';
         document.getElementById('disk').textContent = d.disk + '%';
         document.getElementById('net').textContent  = d.net;
+        document.getElementById('aiScore').textContent = 'AI anomaly score: ' + d.score;
 
         const bar = document.getElementById('statusBar');
-        document.getElementById('aiScore').textContent = 'AI anomaly score: ' + d.score;
         if (d.anomaly) {
             bar.className = 'status-bar status-anomaly';
-            bar.innerHTML = '🚨 ANOMALY DETECTED — Unusual system behaviour spotted by AI';
+            bar.innerHTML = ' ANOMALY DETECTED — Unusual system behaviour spotted by AI';
+            if (anomalyTimer) clearTimeout(anomalyTimer);
+            anomalyTimer = setTimeout(() => {
+                bar.className = 'status-bar status-normal';
+                bar.innerHTML = '<span class="dot"></span>  All systems normal';
+            }, 8000);
         } else {
-            bar.className = 'status-bar status-normal';
-            bar.innerHTML = '<span class="dot"></span> ✅ All systems normal';
+            if (!anomalyTimer) {
+                bar.className = 'status-bar status-normal';
+                bar.innerHTML = '<span class="dot"></span>  All systems normal';
+            }
         }
         addData(cpuChart, d.cpu);
         addData(ramChart, d.ram);
     } catch(e) { console.error(e); }
 };
 
-setInterval(refresh, 3000);
-refresh();
 const refreshForecast = async () => {
     try {
         const r = await fetch('/forecast');
         const d = await r.json();
+        if (d.error) return;
         const body = document.getElementById('forecastBody');
         body.innerHTML = d.forecast.map(row => `
             <tr>
@@ -151,7 +159,9 @@ const refreshForecast = async () => {
     } catch(e) { console.error(e); }
 };
 
+setInterval(refresh, 3000);
 setInterval(refreshForecast, 30000);
+refresh();
 refreshForecast();
 </script>
 </body>
@@ -174,15 +184,17 @@ def metrics():
     scaled = scaler.transform(df)
     result = model.predict(scaled)[0]
     score  = round(model.decision_function(scaled)[0], 3)
-    # If anomaly detected, trigger alert
-    if result == -1:
+    is_anomaly = bool(result == -1 and score < -0.05)
+
+    if is_anomaly:
         try:
             send_alert(cpu, ram, score)
         except Exception:
             pass
 
     return jsonify(cpu=cpu, ram=ram, disk=disk, net=net,
-                   anomaly=bool(result == -1), score=score)
+                   anomaly=is_anomaly, score=score)
+
 @app.route('/forecast')
 def forecast():
     try:
@@ -191,23 +203,26 @@ def forecast():
         with open("models/saved/ram_prophet.pkl", "rb") as f:
             ram_model = pickle.load(f)
 
-        future_cpu = cpu_model.make_future_dataframe(periods=6, freq="5min")
-        future_ram = ram_model.make_future_dataframe(periods=6, freq="5min")
+        now = datetime.now()
+        future_times = pd.date_range(start=now, periods=6, freq="5min")
+        future = pd.DataFrame({"ds": future_times})
 
-        cpu_forecast = cpu_model.predict(future_cpu).tail(6)
-        ram_forecast = ram_model.predict(future_ram).tail(6)
+        cpu_forecast = cpu_model.predict(future)
+        ram_forecast = ram_model.predict(future)
 
         result = []
         for i in range(6):
+            cpu_val = round(max(0, min(100, cpu_forecast.iloc[i]["yhat"])), 1)
+            ram_val = round(max(0, min(100, ram_forecast.iloc[i]["yhat"])), 1)
             result.append({
                 "time": cpu_forecast.iloc[i]["ds"].strftime("%H:%M"),
-                "cpu": round(cpu_forecast.iloc[i]["yhat"], 1),
-                "ram": round(ram_forecast.iloc[i]["yhat"], 1)
+                "cpu":  cpu_val,
+                "ram":  ram_val
             })
         return jsonify(forecast=result)
     except Exception as e:
         return jsonify(error=str(e))
 
 if __name__ == '__main__':
-    print("Dashboard running at http://localhost:5000")
-    app.run(debug=False, port=5000)
+    print("Dashboard running at http://localhost:5001")
+    app.run(debug=False, port=5001)
