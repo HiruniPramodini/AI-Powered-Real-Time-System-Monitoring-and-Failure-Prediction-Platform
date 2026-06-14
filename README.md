@@ -3,6 +3,9 @@
 A real-time system monitoring platform with AI-based anomaly detection 
 and failure prediction, built as a 3rd year university project.
 
+## Dashboard Preview
+![AI Monitor Dashboard](Screenshot 2026-06-14 151639.png)
+
 ## Features
 - Live CPU, RAM, disk, and network monitoring
 - Time-series data storage with InfluxDB
