@@ -1,7 +1,7 @@
 from plyer import notification
 from datetime import datetime
 
-COOLDOWN_MINUTES = 5
+COOLDOWN_MINUTES = 2
 last_alert_time  = None
 
 def send_alert(cpu, ram, score):
