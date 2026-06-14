@@ -4,7 +4,18 @@ A real-time system monitoring platform with AI-based anomaly detection
 and failure prediction, built as a 3rd year university project.
 
 ## Dashboard Preview
-![AI Monitor Dashboard](Screenshot 2026-06-14 151639.png)
+
+### Normal State
+![Normal](Screenshot 2026-06-14 145006.png)
+
+### Anomaly Detected with Windows Notification
+![Anomaly](Screenshot 2026-06-12 124431.png)
+
+### AI Forecast Table
+![Forecast](Screenshot 2026-06-14 151609.png)
+
+### Live CPU & RAM Charts
+![Charts](Screenshot 2026-06-14 151639.png)
 
 ## Features
 - Live CPU, RAM, disk, and network monitoring
